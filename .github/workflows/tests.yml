@@ -1,0 +1,42 @@
+name: access-control-tests
+
+on: [push, pull_request]
+
+jobs:
+  access-control:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://rag:rag@localhost:5432/rag
+      OPENAI_API_KEY: sk-dummy-not-used-by-these-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "mcp[cli]<2" openai "psycopg[binary]" pgvector numpy python-dotenv
+
+      - name: Create synthetic data
+        run: python -m app.seed
+
+      - name: Access-control tests
+        run: python -m app.test_access

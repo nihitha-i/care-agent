@@ -44,6 +44,8 @@ async def main():
 
     for name, ok in checks.items():
         print(f"{'PASS' if ok else 'FAIL'}  {name}")
+        if not all(checks.values()):
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-"""LangGraph agent that uses the MCP server's tools, with human approval for write actions."""
+"""LangGraph agent that uses the MCP server's tools, with human approval for write actions.
+Set PHOENIX_TRACING=1 to send traces to a local Arize Phoenix server."""
 import asyncio
 import json
 import os
@@ -10,8 +11,15 @@ from langgraph.graph import END, START, StateGraph
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
+from opentelemetry import trace
 
 from app.config import CHAT_MODEL
+
+if os.getenv("PHOENIX_TRACING") == "1":
+    from phoenix.otel import register
+    register(project_name="care-agent", endpoint="http://localhost:6006/v1/traces",
+             auto_instrument=True)  # traces every OpenAI call, sent over HTTP to port 6006
+tracer = trace.get_tracer("care-agent")  # does nothing unless tracing is on
 
 WRITE_TOOLS = {"update_address", "send_message"}  # these change data or send something
 MAX_STEPS = 8
@@ -91,13 +99,19 @@ class CareAgent:
         for tc in calls:
             name = tc["function"]["name"]
             args = json.loads(tc["function"]["arguments"] or "{}")
-            if name in WRITE_TOOLS and not await self.approve(name, args):
-                output = json.dumps({"error": "The member did not approve this action."})
-                log.append({"tool": name, "args": args, "approved": False})
-            else:
-                result = await self.session.call_tool(name, args)
-                output = result.content[0].text if result.content else "{}"
-                log.append({"tool": name, "args": args, "approved": True})
+            with tracer.start_as_current_span(f"tool.{name}") as span:
+                span.set_attribute("tool.name", name)
+                span.set_attribute("tool.args", json.dumps(args))
+                if name in WRITE_TOOLS and not await self.approve(name, args):
+                    output = json.dumps({"error": "The member did not approve this action."})
+                    approved = False
+                else:
+                    result = await self.session.call_tool(name, args)
+                    output = result.content[0].text if result.content else "{}"
+                    approved = True
+                span.set_attribute("tool.approved", approved)
+                span.set_attribute("tool.error", '"error"' in output)
+            log.append({"tool": name, "args": args, "approved": approved})
             new_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": output})
         return {"messages": state["messages"] + new_messages, "tool_log": log}
 
@@ -130,20 +144,25 @@ async def load_tools(session: ClientSession) -> list:
 
 
 async def run_agent(question: str, member_id: str = "M1001", approve=cli_approve) -> dict:
-    async with stdio_client(server_for(member_id)) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            agent = CareAgent(session, await load_tools(session), approve)
-            state = await agent.graph.ainvoke({
-                "messages": [
-                    {"role": "system", "content": SYSTEM.format(member_id=member_id)},
-                    {"role": "user", "content": question},
-                ],
-                "steps": 0,
-                "tool_log": [],
-            })
-    last = state["messages"][-1]
-    answer = last["content"] if not last.get("tool_calls") else "Stopped: too many steps."
+    with tracer.start_as_current_span("agent.run") as span:
+        span.set_attribute("member.id", member_id)
+        span.set_attribute("input.value", question)
+        async with stdio_client(server_for(member_id)) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                agent = CareAgent(session, await load_tools(session), approve)
+                state = await agent.graph.ainvoke({
+                    "messages": [
+                        {"role": "system", "content": SYSTEM.format(member_id=member_id)},
+                        {"role": "user", "content": question},
+                    ],
+                    "steps": 0,
+                    "tool_log": [],
+                })
+        last = state["messages"][-1]
+        answer = last["content"] if not last.get("tool_calls") else "Stopped: too many steps."
+        span.set_attribute("output.value", answer)
+        span.set_attribute("agent.steps", state["steps"])
     return {"answer": answer, "tool_log": state["tool_log"], "steps": state["steps"]}
 
 
