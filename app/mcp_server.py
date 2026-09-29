@@ -12,7 +12,7 @@ from app.db import get_conn
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
-mcp = FastMCP("care-tools")
+mcp = FastMCP("care-tools", log_level="WARNING")
 _openai = OpenAI()
 
 
