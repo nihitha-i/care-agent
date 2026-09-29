@@ -9,7 +9,7 @@ failed = df[~df.success]
 
 for task, group in failed.groupby("task"):
     r = group.iloc[0]
-        checks = [c for c in ("tools_ok", "approval_ok", "side_ok", "facts_ok", "answer_ok") if not r[c]]
+    checks = [c for c in ("tools_ok", "approval_ok", "side_ok", "facts_ok", "answer_ok") if not r[c]]
     print(f"=== {task}  (failed {len(group)}/{df[df.task == task].shape[0]} runs)")
     print(f"failed checks: {', '.join(checks)}")
     print(f"tools called:  {r.tools_called if isinstance(r.tools_called, str) else '(none)'}")
