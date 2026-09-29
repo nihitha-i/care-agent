@@ -89,7 +89,9 @@ async def run_task(task: dict) -> dict:
     before = member_data(member_id)
     start = time.time()
     try:
-        result = await run_agent(task["question"], member_id, approve)
+        result = await asyncio.wait_for(run_agent(task["question"], member_id, approve), timeout=90)
+    except asyncio.TimeoutError:
+        result = {"answer": "ERROR: Timeout", "tool_log": [], "steps": 0}
     except Exception as e:  # a crash counts as a failed task, not a crashed eval
         result = {"answer": f"ERROR: {e}", "tool_log": [], "steps": 0}
     seconds = time.time() - start

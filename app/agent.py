@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from mcp import ClientSession, StdioServerParameters, server
+from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
 
@@ -15,12 +15,7 @@ from app.config import CHAT_MODEL
 
 WRITE_TOOLS = {"update_address", "send_message"}  # these change data or send something
 MAX_STEPS = 8
-
-SERVER = StdioServerParameters(
-    command=sys.executable,
-    args=["-m", "app.mcp_server"],
-    cwd=str(Path(__file__).resolve().parent.parent),
-)
+PROJECT_DIR = str(Path(__file__).resolve().parent.parent)
 
 SYSTEM = """You are a Medicare member-services assistant helping the logged-in member {member_id}.
 Rules:
@@ -49,6 +44,16 @@ class AgentState(TypedDict):
     messages: list
     steps: int
     tool_log: list
+
+
+def server_for(member_id: str) -> StdioServerParameters:
+    """Start an MCP server session locked to one member."""
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "app.mcp_server"],
+        cwd=PROJECT_DIR,
+        env={**os.environ, "CARE_MEMBER_ID": member_id},
+    )
 
 
 async def cli_approve(tool: str, args: dict) -> bool:
@@ -125,11 +130,7 @@ async def load_tools(session: ClientSession) -> list:
 
 
 async def run_agent(question: str, member_id: str = "M1001", approve=cli_approve) -> dict:
-       server = StdioServerParameters(
-        command=SERVER.command, args=SERVER.args, cwd=SERVER.cwd,
-        env={**os.environ, "CARE_MEMBER_ID": member_id},
-    )
-    async with stdio_client(server) as (read, write): 
+    async with stdio_client(server_for(member_id)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             agent = CareAgent(session, await load_tools(session), approve)
