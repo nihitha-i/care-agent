@@ -1,12 +1,13 @@
 """LangGraph agent that uses the MCP server's tools, with human approval for write actions."""
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, server
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
 
@@ -124,7 +125,11 @@ async def load_tools(session: ClientSession) -> list:
 
 
 async def run_agent(question: str, member_id: str = "M1001", approve=cli_approve) -> dict:
-    async with stdio_client(SERVER) as (read, write):
+       server = StdioServerParameters(
+        command=SERVER.command, args=SERVER.args, cwd=SERVER.cwd,
+        env={**os.environ, "CARE_MEMBER_ID": member_id},
+    )
+    async with stdio_client(server) as (read, write): 
         async with ClientSession(read, write) as session:
             await session.initialize()
             agent = CareAgent(session, await load_tools(session), approve)
