@@ -19,12 +19,16 @@ JUDGE_MODEL = "gpt-4o"
 judge_client = OpenAI()
 
 JUDGE = (
-    "You grade a Medicare member-services assistant. You get the member's QUESTION, the "
-    "member's actual DATA from the database, the TOOLS the assistant called, and its ANSWER.\n"
-    "Mark correct=true only if:\n"
-    "- every fact about the member in the answer matches DATA,\n"
-    "- the answer fully addresses the question,\n"
-    "- if the answer states Medicare coverage rules, it cites a policy document/page.\n"
+    "You grade a Medicare member-services assistant. You get the member's QUESTION, the member's "
+    "DATA BEFORE the assistant acted, DATA AFTER it acted, the TOOLS it called, and its ANSWER.\n"
+    "Rules:\n"
+    "- Facts about the member must match the data (use AFTER for anything the assistant changed).\n"
+    "- If the member asked for a change and AFTER shows it was made, confirming it is correct.\n"
+    "- send_message is a DEMO tool: messages are stored, not delivered. Saying the message was "
+    "stored is correct.\n"
+    "- For greetings or thanks, a brief polite reply is correct.\n"
+    "- The answer must address every part of the question and be specific to this member.\n"
+    "- If the answer states Medicare coverage rules, it must cite a policy document and page.\n"
     'Reply in JSON: {"correct": true or false, "reason": "one short sentence"}'
 )
 
@@ -61,12 +65,13 @@ def side_effect_ok(task: dict, member_id: str) -> bool:
         return row is not None and expect["to"] in row["to_address"]
 
 
-def judge(question: str, data: str, tools: list, answer: str) -> dict:
+def judge(question: str, before: str, after: str, tools: list, answer: str) -> dict:
     out = judge_client.chat.completions.create(
         model=JUDGE_MODEL, temperature=0, response_format={"type": "json_object"},
         messages=[{"role": "system", "content": JUDGE},
-                  {"role": "user", "content": f"QUESTION: {question}\n\nDATA: {data}\n\n"
-                                              f"TOOLS CALLED: {tools}\n\nANSWER:\n{answer}"}],
+                  {"role": "user", "content": f"QUESTION: {question}\n\nDATA BEFORE: {before}\n\n"
+                                              f"DATA AFTER: {after}\n\nTOOLS CALLED: {tools}\n\n"
+                                              f"ANSWER:\n{answer}"}],
     )
     return json.loads(out.choices[0].message.content)
 
@@ -81,6 +86,7 @@ async def run_task(task: dict) -> dict:
         return tool in expected_writes  # approve only what the member asked for
 
     reset_data()
+    before = member_data(member_id)
     start = time.time()
     try:
         result = await run_agent(task["question"], member_id, approve)
@@ -89,21 +95,24 @@ async def run_task(task: dict) -> dict:
     seconds = time.time() - start
 
     called = [t["tool"] for t in result["tool_log"]]
-    grade = judge(task["question"], member_data(member_id), called, result["answer"])
+    answer = result["answer"] or ""
+    grade = judge(task["question"], before, member_data(member_id), called, answer)
     row = {
         "task": task["id"],
         "tools_ok": set(task["required"]) <= set(called),
         "approval_ok": set(requested) == expected_writes,
         "side_ok": side_effect_ok(task, member_id),
+        "facts_ok": all(t.lower() in answer.lower() for t in task.get("must_mention", [])),
         "answer_ok": bool(grade.get("correct")),
         "unrequested_writes": len(set(requested) - expected_writes),
         "latency_s": round(seconds, 2),
         "steps": result["steps"],
         "tools_called": ", ".join(called),
         "judge_reason": grade.get("reason", ""),
-        "answer": result["answer"],
+        "answer": answer,
     }
-    row["success"] = row["tools_ok"] and row["approval_ok"] and row["side_ok"] and row["answer_ok"]
+    row["success"] = all(row[c] for c in
+                         ("tools_ok", "approval_ok", "side_ok", "facts_ok", "answer_ok"))
     return row
 
 
@@ -123,11 +132,13 @@ async def main(runs: int, label: str):
     Path("results").mkdir(exist_ok=True)
     df.to_csv(f"results/task_eval_{label}_details.csv", index=False)
 
-    pct = ["task_success", "tool_selection", "approval_correct", "side_effects_ok", "answer_correct"]
+    pct = ["task_success", "tool_selection", "approval_correct", "side_effects_ok",
+           "key_facts_ok", "answer_correct"]
     per_run = df.groupby("run").agg(
         task_success=("success", "mean"), tool_selection=("tools_ok", "mean"),
         approval_correct=("approval_ok", "mean"), side_effects_ok=("side_ok", "mean"),
-        answer_correct=("answer_ok", "mean"), unrequested_writes=("unrequested_writes", "sum"),
+        key_facts_ok=("facts_ok", "mean"), answer_correct=("answer_ok", "mean"),
+        unrequested_writes=("unrequested_writes", "sum"),
         avg_latency_s=("latency_s", "mean"), avg_steps=("steps", "mean"),
     )
     per_run[pct] = per_run[pct] * 100
@@ -148,4 +159,3 @@ if __name__ == "__main__":
     p.add_argument("--label", default="v1")
     a = p.parse_args()
     asyncio.run(main(a.runs, a.label))
-    

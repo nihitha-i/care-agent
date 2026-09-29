@@ -4,8 +4,6 @@ from datetime import date, timedelta
 
 from app.db import get_conn, init_db
 
-random.seed(42)
-
 FIRST = ["Ava", "Liam", "Maya", "Noah", "Zara", "Owen", "Isla", "Ravi", "Lena", "Omar",
          "Grace", "Theo", "Priya", "Marcus", "Elena", "Samuel", "Hana", "Diego", "Ruth", "Kofi"]
 LAST = ["Patel", "Nguyen", "Garcia", "Okafor", "Kim", "Silva", "Cohen", "Reyes", "Novak",
@@ -28,6 +26,7 @@ DENIALS = ["Service not medically necessary", "Excluded from coverage",
 
 
 def main():
+    random.seed(42)
     init_db()
     with get_conn() as conn:
         conn.execute("TRUNCATE care.claims, care.members, care.messages, care.audit_log")
